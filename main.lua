@@ -1,6 +1,7 @@
 local mathsies = require("lib.mathsies")
 local vec3 = mathsies.vec3
 local quat = mathsies.quat
+local mat4 = mathsies.mat4
 
 local consts = require("consts")
 
@@ -9,6 +10,7 @@ local camera
 local sceneShader
 local dummyTexture
 local outputCanvas
+local upperSkybox, lowerSkybox
 
 local function euler(t, x, dt, f)
 	x = x + f(t, x) * dt
@@ -135,6 +137,165 @@ local function getCameraRight()
 	)
 end
 
+local function safeAcos(x) -- For when you're sure the input is in [-1, 1]
+	return math.acos(math.max(-1, math.min(1, x)))
+end
+
+local function fixorder(t)
+	-- local function index(i, j)
+	-- 	return i + 3 * j + 1
+	-- end
+	-- for i = 0, 3 do
+	-- 	for j = 0, 3 do
+	-- 		if i > j then
+	-- 			t[index(i, j)], t[index(j, i)] = t[index(j, i)], t[index(i, j)]
+	-- 		end
+	-- 	end
+	-- end
+	-- return unpack(t)
+	return mat4.components(mat4.transpose(mat4(unpack(t))))
+end
+
+local function swapcols2and3(t)
+	local function index(i, j)
+		return i + 3 * j + 1
+	end
+	for i = 0, 3 do
+		t[index(1, i)], t[index(2, i)] = t[index(2, i)], t[index(1, i)]
+	end
+	return unpack(t)
+end
+
+local function sphericalJacobian(position) -- Returns mat4 because there are no mat3s in mathsies
+	local r, theta, phi = vec3.components(position)
+	return mat4(
+		fixorder{math.sin(theta) * math.cos(phi),
+		math.sin(theta) * math.sin(phi),
+		math.cos(theta),
+		0,
+
+		r * math.cos(theta) * math.cos(phi),
+		r * math.cos(theta) * math.sin(phi),
+		-r * math.sin(theta),
+		0,
+
+		-r * math.sin(theta) * math.sin(phi),
+		r * math.sin(theta) * math.cos(phi),
+		0,
+		0,
+
+		0,
+		0,
+		0,
+		1}
+	)
+end
+
+local function alternateSphericalInverseJacobian(position)
+	local r, theta, phi = vec3.components(position)
+	return mat4(
+		fixorder{math.sin(theta) * math.cos(phi),
+		math.cos(theta) * math.cos(phi) / r,
+		-math.sin(phi) / (math.sin(theta) * r),
+		0,
+
+		math.cos(theta),
+		-math.sin(theta) / r,
+		0,
+		0,
+
+		math.sin(theta) * math.sin(phi),
+		math.cos(theta) * math.sin(phi) / r,
+		math.cos(phi) / (math.sin(theta) * r),
+		0,
+
+		0,
+		0,
+		0,
+		1}
+	)
+end
+
+local function coordSwitchPosition(position)
+	local r, theta, phi = vec3.components(position)
+	local angleDirection = vec3(
+		math.sin(theta) * math.cos(phi),
+		math.sin(theta) * math.sin(phi),
+		math.cos(theta)
+	)
+	return vec3(
+		r,
+		safeAcos(angleDirection.y),
+		sign(angleDirection.z) * safeAcos(angleDirection.x / math.sqrt(angleDirection.x ^ 2 + angleDirection.z ^ 2))
+	)
+end
+
+local function coordSwitchTangent(position, tangent)
+	return
+		alternateSphericalInverseJacobian(coordSwitchPosition(position)) *
+		sphericalJacobian(position) *
+		tangent
+end
+
+local function sphericalToAbsoluteCartesianPosition(position)
+	local r, theta, phi = vec3.components(position)
+	return vec3(
+		r * math.sin(theta) * math.cos(phi),
+		r * math.sin(theta) * math.sin(phi),
+		r * math.cos(theta)
+	)
+end
+
+local function alternateSphericalToAbsoluteCartesianPosition(position)
+	local r, theta, phi = vec3.components(position)
+	return vec3(
+		r * math.sin(theta) * math.cos(phi),
+		r * math.cos(theta),
+		r * math.sin(theta) * math.sin(phi)
+	)
+end
+
+local function switchCameraCoords()
+	-- local initialPosition = camera.position
+
+	local initialR = camera.position.x
+	local fakePosition = vec3(1, camera.position.y, camera.position.z)
+
+	-- local prevxyz = camera.altCoords and alternateSphericalToAbsoluteCartesianPosition(camera.position) or sphericalToAbsoluteCartesianPosition(camera.position)
+
+	-- local prevr = getCameraRight()
+	local function handleTangent(name, normalise)
+		-- local initialLen = vectorLengthTangent(camera.position, camera[name])
+		local initialDr = camera[name].x
+		camera[name] = coordSwitchTangent(fakePosition, camera[name])
+		camera[name].x = initialDr
+		if normalise then
+			camera[name] = normaliseTangentVector(coordSwitchPosition(camera.position), camera[name])
+		end
+		-- local newLen = vectorLengthTangent(coordSwitchPosition(camera.position), camera[name])
+		-- print(name, "lendiff", newLen - initialLen)
+	end
+	handleTangent("velocity")
+	handleTangent("angularVelocity")
+	handleTangent("forward", true)
+	handleTangent("up", true)
+
+	camera.position = coordSwitchPosition(fakePosition)
+	camera.position.x = initialR
+
+	camera.altCoords = not camera.altCoords
+
+	-- local currr = getCameraRight()
+	-- print("rightlendiff",
+	-- 	vectorLengthTangent(camera.position, currr) -
+	-- 	vectorLengthTangent(initialPosition, prevr)
+	-- )
+
+	-- local currxyz = camera.altCoords and alternateSphericalToAbsoluteCartesianPosition(camera.position) or sphericalToAbsoluteCartesianPosition(camera.position)
+
+	-- print("posdist", vec3.distance(prevxyz, currxyz))
+end
+
 local stateMetatable
 stateMetatable = {
 	__add = function(a, b) -- b is expected to be another such array
@@ -158,14 +319,18 @@ function love.load()
 	dummyTexture = love.graphics.newImage(love.image.newImageData(1, 1))
 	outputCanvas = love.graphics.newCanvas()
 
+	-- TODO: Generate skyboxes
+
 	wormhole = {
 		throatRadius = 15
 	}
 
-	local position = vec3(-100, consts.tau / 4, 0)
+	local position = vec3(-50, consts.tau / 2, 0)
 	local forward = normaliseTangentVector(position, vec3(1, 0, 0))
 	local up = normaliseTangentVector(position, vec3(0, 1, 0))
 	camera = {
+		altCoords = false,
+
 		position = position,
 		velocity = vec3(),
 		acceleration = 50,
@@ -180,8 +345,19 @@ function love.load()
 end
 
 function love.update(dt)
+	local thetaMod = camera.position.y % (consts.tau / 2)
+	if
+		thetaMod < consts.altCoordsProportion * consts.tau / 2 or
+		thetaMod > (1 - consts.altCoordsProportion) * consts.tau / 2
+	then
+		switchCameraCoords()
+		-- print("Switched")
+	end
+
+	local multiplier = camera.altCoords and -1 or 1
+	local forward, up, right = camera.forward, camera.up, multiplier * getCameraRight()
+
 	local translation = vec3()
-	local forward, up, right = camera.forward, camera.up, getCameraRight()
 	if love.keyboard.isDown("d") then
 		translation = translation + right
 	end
@@ -221,7 +397,7 @@ function love.update(dt)
 	if love.keyboard.isDown("o") then
 		rotation = rotation - forward
 	end
-	rotation = -rotation -- TODO: Understand why this is needed when it isn't in other projects
+	rotation = multiplier * -rotation -- TODO: Understand why this is needed when it isn't in other projects
 	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
 
 	local forwardCartesian = sphericalToCartesian(camera.position, forward)
@@ -236,7 +412,7 @@ function love.update(dt)
 	camera.velocity = camera.velocity + acceleration * dt
 
 	-- Move position and parallel transport tangent vectors
-	local method = euler
+	local method = rk4
 	local steps = 1
 	local stepSize = dt / steps
 	-- Parallel transported tangent vectors (such as the forward vector) are updated separately after position and velocity as this seems to maintain accuracy
@@ -323,14 +499,9 @@ function love.update(dt)
 	end
 	camera.position = vec3(state[1], state[2] % (consts.tau / 2), state[3] % consts.tau)
 	camera.velocity = vec3(state[4], state[5], state[6])
-	-- TODO: Normalise forward and up and also realign
 	camera.forward = vec3(parallelTransportState[1], parallelTransportState[2], parallelTransportState[3])
 	camera.up = vec3(parallelTransportState[4], parallelTransportState[5], parallelTransportState[6])
 
-
-
-	-- TEMP
-	-- do return end
 	local cameraRight = getCameraRight()
 	camera.up = normaliseTangentVector(camera.position,
 		cartesianToSpherical(camera.position,
@@ -342,7 +513,7 @@ function love.update(dt)
 			)
 		)
 	)
-	camera.up = normaliseTangentVector(camera.position, camera.up)
+	-- camera.up = normaliseTangentVector(camera.position, camera.up)
 	camera.forward = normaliseTangentVector(camera.position, camera.forward)
 
 	camera.position.y = camera.position.y % (consts.tau / 2)
@@ -350,6 +521,8 @@ function love.update(dt)
 end
 
 function love.draw()
+	local multiplier = camera.altCoords and -1 or 1
+
 	love.graphics.setShader(sceneShader)
 	love.graphics.setCanvas(outputCanvas)
 	love.graphics.clear()
@@ -361,7 +534,7 @@ function love.draw()
 		sphericalToCartesian(camera.position, camera.up)
 	)})
 	sceneShader:send("initialCameraRight", {vec3.components(
-		sphericalToCartesian(camera.position, getCameraRight())
+		sphericalToCartesian(camera.position, multiplier * getCameraRight())
 	)})
 	local screenAspectRatio = outputCanvas:getWidth() / outputCanvas:getHeight()
 	sceneShader:send("cameraHorizontalDirectionExtent", math.tan(camera.verticalFOV / 2))
@@ -369,6 +542,10 @@ function love.draw()
 	sceneShader:send("wormholeThroatRadius", wormhole.throatRadius)
 	sceneShader:send("raySpeed", consts.rayStepSize)
 	sceneShader:send("rayStepCount", consts.rayStepCount)
+	sceneShader:send("initialAltCoords", camera.altCoords)
+	sceneShader:send("altCoordsProportion", consts.altCoordsProportion)
+	-- sceneShader:send("lowerSkybox", lowerSkybox)
+	-- sceneShader:send("upperSkybox", upperSkybox)
 	love.graphics.draw(dummyTexture, 0, 0, 0, outputCanvas:getDimensions())
 	love.graphics.setShader()
 	love.graphics.setCanvas()
