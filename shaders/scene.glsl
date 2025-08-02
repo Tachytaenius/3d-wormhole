@@ -282,10 +282,9 @@ void pixelmain() {
 	bool altCoords = initialAltCoords;
 	for (int stepNumber = 0; stepNumber < rayStepCount; stepNumber++) {
 		// Check if a coordinate transition is needed between main and alternate spherical coords
-		float thetaMod = mod(rayPosition.y, tau / 2.0);
 		if (
-			thetaMod < altCoordsProportion * tau / 2.0 ||
-			thetaMod > (1.0 - altCoordsProportion) * tau / 2.0
+			rayPosition.y < altCoordsProportion * tau / 2.0 ||
+			rayPosition.y > (1.0 - altCoordsProportion) * tau / 2.0
 			// || true // To switch every frame
 		) {
 			vec3 fakeRayPosition = vec3(1.0, rayPosition.yz); // For some reason setting the 1.0 to a really high value makes things smoother when switching between coordinate systems every frame (for testing purposes), but doesn't deal with the seam seen when switching coordinate systems normally?

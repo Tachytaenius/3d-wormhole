@@ -256,10 +256,16 @@ local function alternateSphericalToAbsoluteCartesianPosition(position)
 end
 
 local function switchCameraCoords()
+	-- We use a multiplier in some code in update and draw based on whether the camera is in alternative coords mode.
+	-- This may be a bad way to do it, since maybe we just need to switch the coords of tangent vectors differently...?
+	-- TODO: Investigate!
+
 	-- local initialPosition = camera.position
 
 	local initialR = camera.position.x
 	local fakePosition = vec3(1, camera.position.y, camera.position.z)
+
+	local switchedPosition = coordSwitchPosition(camera.position)
 
 	-- local prevxyz = camera.altCoords and alternateSphericalToAbsoluteCartesianPosition(camera.position) or sphericalToAbsoluteCartesianPosition(camera.position)
 
@@ -271,14 +277,14 @@ local function switchCameraCoords()
 		camera[name].x = initialDr
 		if
 			lengthMode == "normalise" or
-			lengthMode == "maintain" and vectorLengthTangent(coordSwitchPosition(camera.position), camera[name]) > 0
+			lengthMode == "maintain" and vectorLengthTangent(switchedPosition, camera[name]) > 0
 		then
-			camera[name] = normaliseTangentVector(coordSwitchPosition(camera.position), camera[name])
+			camera[name] = normaliseTangentVector(switchedPosition, camera[name])
 		end
 		if lengthMode == "maintain" then
 			camera[name] = camera[name] * initialLen
 		end
-		-- local newLen = vectorLengthTangent(coordSwitchPosition(camera.position), camera[name])
+		-- local newLen = vectorLengthTangent(switchedPosition, camera[name])
 		-- print(name, "lendiff", newLen - initialLen)
 	end
 	handleTangent("velocity")
@@ -286,7 +292,7 @@ local function switchCameraCoords()
 	handleTangent("forward", "normalise")
 	handleTangent("up", "normalise")
 
-	camera.position = coordSwitchPosition(fakePosition)
+	camera.position = switchedPosition
 	camera.position.x = initialR
 
 	camera.altCoords = not camera.altCoords
@@ -348,7 +354,7 @@ function love.load()
 		throatRadius = 15
 	}
 
-	local position = vec3(-50, consts.tau / 2, 0)
+	local position = vec3(-50, consts.tau / 4, 0)
 	local forward = normaliseTangentVector(position, vec3(1, 0, 0))
 	local up = normaliseTangentVector(position, vec3(0, 1, 0))
 	camera = {
@@ -368,10 +374,9 @@ function love.load()
 end
 
 function love.update(dt)
-	local thetaMod = camera.position.y % (consts.tau / 2)
 	if
-		thetaMod < consts.altCoordsProportion * consts.tau / 2 or
-		thetaMod > (1 - consts.altCoordsProportion) * consts.tau / 2
+		camera.position.y < consts.altCoordsProportion * consts.tau / 2 or
+		camera.position.y > (1 - consts.altCoordsProportion) * consts.tau / 2
 	then
 		switchCameraCoords()
 		-- print("Switched")
@@ -420,14 +425,13 @@ function love.update(dt)
 	if love.keyboard.isDown("o") then
 		rotation = rotation - forward
 	end
-	rotation = multiplier * -rotation
+	rotation = -rotation -- TODO: Understand why this is there when other projects don't need it.
 	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
 	camera.angularVelocity = camera.angularVelocity + angularAcceleration * dt
-	print(vectorLengthTangent(camera.position, camera.angularVelocity))
 
 	local forwardCartesian = sphericalToCartesian(camera.position, forward)
 	local upCartesian = sphericalToCartesian(camera.position, up)
-	local rotationQuat = quat.fromAxisAngle(sphericalToCartesian(camera.position, camera.angularVelocity) * dt)
+	local rotationQuat = quat.fromAxisAngle(sphericalToCartesian(camera.position, multiplier * camera.angularVelocity) * dt)
 	local forwardCartesianRotated = vec3.rotate(forwardCartesian, rotationQuat)
 	local upCartesianRotated = vec3.rotate(upCartesian, rotationQuat)
 	camera.forward = cartesianToSpherical(camera.position, forwardCartesianRotated)
@@ -517,7 +521,7 @@ function love.update(dt)
 			return newState
 		end)
 	end
-	camera.position = vec3(state[1], state[2] % (consts.tau / 2), state[3] % consts.tau)
+	camera.position = vec3(state[1], state[2], state[3])
 	camera.velocity = vec3(state[4], state[5], state[6])
 	camera.forward = vec3(parallelTransportState[1], parallelTransportState[2], parallelTransportState[3])
 	camera.up = vec3(parallelTransportState[4], parallelTransportState[5], parallelTransportState[6])
@@ -537,7 +541,7 @@ function love.update(dt)
 	-- camera.up = normaliseTangentVector(camera.position, camera.up)
 	camera.forward = normaliseTangentVector(camera.position, camera.forward)
 
-	camera.position.y = camera.position.y % (consts.tau / 2)
+	-- theta (camera.position.y) won't go out of bounds (barring absurd speeds, I guess) because we switch coordinates before it gets close to 0 or tau / 2
 	camera.position.z = camera.position.z % consts.tau
 end
 
