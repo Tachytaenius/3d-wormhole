@@ -265,13 +265,13 @@ mat2x3 integrationStateDeriv(float t, mat2x3 state) {
 }
 
 vec3 sampleUpperBackground(vec3 direction) {
-	// return Texel(upperSkybox, direction).rgb;
-	return direction * 0.5 + 0.5;
+	return Texel(upperSkybox, direction).rgb;
+	// return direction * 0.5 + 0.5;
 }
 
 vec3 sampleLowerBackground(vec3 direction) {
-	// return Texel(lowerSkybox, direction).rgb;
-	return (direction * 0.5 + 0.5) * 0.5;
+	return Texel(lowerSkybox, direction).rgb;
+	// return (direction * 0.5 + 0.5) * 0.5;
 }
 
 void pixelmain() {

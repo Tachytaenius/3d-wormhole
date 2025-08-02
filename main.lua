@@ -319,7 +319,24 @@ function love.load()
 	dummyTexture = love.graphics.newImage(love.image.newImageData(1, 1))
 	outputCanvas = love.graphics.newCanvas()
 
-	-- TODO: Generate skyboxes
+	local lowerPath = "backgrounds/lower/"
+	lowerSkybox = love.graphics.newCubeImage({
+		lowerPath .. "1.png",
+		lowerPath .. "2.png",
+		lowerPath .. "3.png",
+		lowerPath .. "4.png",
+		lowerPath .. "5.png",
+		lowerPath .. "6.png"
+	})
+	local upperPath = "backgrounds/upper/"
+	upperSkybox = love.graphics.newCubeImage({
+		upperPath .. "1.png",
+		upperPath .. "2.png",
+		upperPath .. "3.png",
+		upperPath .. "4.png",
+		upperPath .. "5.png",
+		upperPath .. "6.png"
+	})
 
 	wormhole = {
 		throatRadius = 15
@@ -397,7 +414,7 @@ function love.update(dt)
 	if love.keyboard.isDown("o") then
 		rotation = rotation - forward
 	end
-	rotation = multiplier * -rotation -- TODO: Understand why this is needed when it isn't in other projects
+	rotation = multiplier * -rotation
 	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
 
 	local forwardCartesian = sphericalToCartesian(camera.position, forward)
@@ -544,8 +561,8 @@ function love.draw()
 	sceneShader:send("rayStepCount", consts.rayStepCount)
 	sceneShader:send("initialAltCoords", camera.altCoords)
 	sceneShader:send("altCoordsProportion", consts.altCoordsProportion)
-	-- sceneShader:send("lowerSkybox", lowerSkybox)
-	-- sceneShader:send("upperSkybox", upperSkybox)
+	sceneShader:send("lowerSkybox", lowerSkybox)
+	sceneShader:send("upperSkybox", upperSkybox)
 	love.graphics.draw(dummyTexture, 0, 0, 0, outputCanvas:getDimensions())
 	love.graphics.setShader()
 	love.graphics.setCanvas()
