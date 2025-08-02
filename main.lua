@@ -264,21 +264,27 @@ local function switchCameraCoords()
 	-- local prevxyz = camera.altCoords and alternateSphericalToAbsoluteCartesianPosition(camera.position) or sphericalToAbsoluteCartesianPosition(camera.position)
 
 	-- local prevr = getCameraRight()
-	local function handleTangent(name, normalise)
-		-- local initialLen = vectorLengthTangent(camera.position, camera[name])
+	local function handleTangent(name, lengthMode)
+		local initialLen = vectorLengthTangent(camera.position, camera[name])
 		local initialDr = camera[name].x
 		camera[name] = coordSwitchTangent(fakePosition, camera[name])
 		camera[name].x = initialDr
-		if normalise then
+		if
+			lengthMode == "normalise" or
+			lengthMode == "maintain" and vectorLengthTangent(coordSwitchPosition(camera.position), camera[name]) > 0
+		then
 			camera[name] = normaliseTangentVector(coordSwitchPosition(camera.position), camera[name])
+		end
+		if lengthMode == "maintain" then
+			camera[name] = camera[name] * initialLen
 		end
 		-- local newLen = vectorLengthTangent(coordSwitchPosition(camera.position), camera[name])
 		-- print(name, "lendiff", newLen - initialLen)
 	end
 	handleTangent("velocity")
 	handleTangent("angularVelocity")
-	handleTangent("forward", true)
-	handleTangent("up", true)
+	handleTangent("forward", "normalise")
+	handleTangent("up", "normalise")
 
 	camera.position = coordSwitchPosition(fakePosition)
 	camera.position.x = initialR
@@ -416,11 +422,12 @@ function love.update(dt)
 	end
 	rotation = multiplier * -rotation
 	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
+	camera.angularVelocity = camera.angularVelocity + angularAcceleration * dt
+	print(vectorLengthTangent(camera.position, camera.angularVelocity))
 
 	local forwardCartesian = sphericalToCartesian(camera.position, forward)
 	local upCartesian = sphericalToCartesian(camera.position, up)
-	local rotationQuat = quat.fromAxisAngle(sphericalToCartesian(camera.position, angularAcceleration) * dt)
-	-- local rotationQuat = quat.fromAxisAngle(angularAcceleration * dt)
+	local rotationQuat = quat.fromAxisAngle(sphericalToCartesian(camera.position, camera.angularVelocity) * dt)
 	local forwardCartesianRotated = vec3.rotate(forwardCartesian, rotationQuat)
 	local upCartesianRotated = vec3.rotate(upCartesian, rotationQuat)
 	camera.forward = cartesianToSpherical(camera.position, forwardCartesianRotated)
@@ -439,7 +446,8 @@ function love.update(dt)
 	}, stateMetatable)
 	local parallelTransportState = setmetatable({
 		camera.forward.x, camera.forward.y, camera.forward.z,
-		camera.up.x, camera.up.y, camera.up.z
+		camera.up.x, camera.up.y, camera.up.z,
+		camera.angularVelocity.x, camera.angularVelocity.y, camera.angularVelocity.z
 	}, stateMetatable)
 	for i = 1, steps do
 		local t = i * stepSize
@@ -480,36 +488,31 @@ function love.update(dt)
 			local christoffels = getChristoffelSymbols(pos)
 			local forward = vec3(parallelTransportState[1], parallelTransportState[2], parallelTransportState[3])
 			local up = vec3(parallelTransportState[4], parallelTransportState[5], parallelTransportState[6])
+			local angularVelocity = vec3(parallelTransportState[7], parallelTransportState[8], parallelTransportState[9])
 
 			local newState = setmetatable({}, stateMetatable)
 
-			local forwardDerivative = vec3()
-			for i = 0, 2 do
-				for j = 0, 2 do
-					for k = 0, 2 do
-						-- vec[consts.indexChars[index]] is just a way to number-index a vector that can normally only be indexed by letter. Note that x is 1, not 0.
-						forwardDerivative[consts.indexChars[i + 1]] = forwardDerivative[consts.indexChars[i + 1]] -
-							christoffels[getChristoffelIndex(i, j, k)] *
-							forward[consts.indexChars[j + 1]] *
-							vel[consts.indexChars[k + 1]]
+			local function move(variable, startIndex)
+				local derivative = vec3()
+				for i = 0, 2 do
+					for j = 0, 2 do
+						for k = 0, 2 do
+							-- vec[consts.indexChars[index]] is just a way to number-index a vector that can normally only be indexed by letter. Note that x is 1, not 0.
+							derivative[consts.indexChars[i + 1]] = derivative[consts.indexChars[i + 1]] -
+								christoffels[getChristoffelIndex(i, j, k)] *
+								variable[consts.indexChars[j + 1]] *
+								vel[consts.indexChars[k + 1]]
+						end
 					end
 				end
+				for i = 1, 3 do
+					newState[startIndex + i - 1] = derivative[consts.indexChars[i]]
+				end
 			end
-			newState[1], newState[2], newState[3] = vec3.components(forwardDerivative)
 
-			local upDerivative = vec3()
-			for i = 0, 2 do
-				for j = 0, 2 do
-					for k = 0, 2 do
-						-- vec[consts.indexChars[index]] is just a way to number-index a vector that can normally only be indexed by letter. Note that x is 1, not 0.
-						upDerivative[consts.indexChars[i + 1]] = upDerivative[consts.indexChars[i + 1]] -
-							christoffels[getChristoffelIndex(i, j, k)] *
-							up[consts.indexChars[j + 1]] *
-							vel[consts.indexChars[k + 1]]
-					end
-				end
-			end
-			newState[4], newState[5], newState[6] = vec3.components(upDerivative)
+			move(forward, 1)
+			move(up, 4)
+			move(angularVelocity, 7)
 
 			return newState
 		end)
@@ -518,6 +521,7 @@ function love.update(dt)
 	camera.velocity = vec3(state[4], state[5], state[6])
 	camera.forward = vec3(parallelTransportState[1], parallelTransportState[2], parallelTransportState[3])
 	camera.up = vec3(parallelTransportState[4], parallelTransportState[5], parallelTransportState[6])
+	camera.angularVelocity = vec3(parallelTransportState[7], parallelTransportState[8], parallelTransportState[9])
 
 	local cameraRight = getCameraRight()
 	camera.up = normaliseTangentVector(camera.position,
