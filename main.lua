@@ -12,6 +12,11 @@ local dummyTexture
 local outputCanvas
 local upperSkybox, lowerSkybox
 
+local renderModeInfo
+
+local rayStepSize
+local rayStepCount
+
 local function euler(t, x, dt, f)
 	x = x + f(t, x) * dt
 	return x
@@ -326,10 +331,12 @@ stateMetatable = {
 	end
 }
 
-function love.load()
+local function init(parameters)
+	parameters = parameters or {}
+
 	sceneShader = love.graphics.newShader("shaders/scene.glsl")
 	dummyTexture = love.graphics.newImage(love.image.newImageData(1, 1))
-	outputCanvas = love.graphics.newCanvas()
+	outputCanvas = love.graphics.newCanvas(parameters.canvasWidth, parameters.canvasHeight) -- If no canvas size is specified, this is the window size
 
 	local lowerPath = "backgrounds/lower/"
 	lowerSkybox = love.graphics.newCubeImage({
@@ -354,26 +361,26 @@ function love.load()
 		throatRadius = 15
 	}
 
-	local position = vec3(-50, consts.tau / 4, 0)
+	local position = vec3(-75, consts.tau / 4, 0)
 	local forward = normaliseTangentVector(position, vec3(1, 0, 0))
 	local up = normaliseTangentVector(position, vec3(0, 1, 0))
 	camera = {
 		altCoords = false,
 
 		position = position,
-		velocity = vec3(),
+		velocity = parameters.initialVelocity or vec3(),
 		acceleration = 50,
 
 		forward = forward,
 		up = up,
-		angularVelocity = vec3(),
+		angularVelocity = parameters.initialAngularVelocity or vec3(),
 		angularAcceleration = 1,
 
 		verticalFOV = math.rad(90)
 	}
 end
 
-function love.update(dt)
+local function update(dt, rendering)
 	if
 		camera.position.y < consts.altCoordsProportion * consts.tau / 2 or
 		camera.position.y > (1 - consts.altCoordsProportion) * consts.tau / 2
@@ -386,44 +393,48 @@ function love.update(dt)
 	local forward, up, right = camera.forward, camera.up, multiplier * getCameraRight()
 
 	local translation = vec3()
-	if love.keyboard.isDown("d") then
-		translation = translation + right
-	end
-	if love.keyboard.isDown("a") then
-		translation = translation - right
-	end
-	if love.keyboard.isDown("e") then
-		translation = translation + up
-	end
-	if love.keyboard.isDown("q") then
-		translation = translation - up
-	end
-	if love.keyboard.isDown("w") then
-		translation = translation + forward
-	end
-	if love.keyboard.isDown("s") then
-		translation = translation - forward
+	if not rendering then
+		if love.keyboard.isDown("d") then
+			translation = translation + right
+		end
+		if love.keyboard.isDown("a") then
+			translation = translation - right
+		end
+		if love.keyboard.isDown("e") then
+			translation = translation + up
+		end
+		if love.keyboard.isDown("q") then
+			translation = translation - up
+		end
+		if love.keyboard.isDown("w") then
+			translation = translation + forward
+		end
+		if love.keyboard.isDown("s") then
+			translation = translation - forward
+		end
 	end
 	local acceleration = normaliseOrZeroTangent(camera.position, translation) * camera.acceleration
 
 	local rotation = vec3()
-	if love.keyboard.isDown("k") then
-		rotation = rotation + right
-	end
-	if love.keyboard.isDown("i") then
-		rotation = rotation - right
-	end
-	if love.keyboard.isDown("l") then
-		rotation = rotation + up
-	end
-	if love.keyboard.isDown("j") then
-		rotation = rotation - up
-	end
-	if love.keyboard.isDown("u") then
-		rotation = rotation + forward
-	end
-	if love.keyboard.isDown("o") then
-		rotation = rotation - forward
+	if not rendering then
+		if love.keyboard.isDown("k") then
+			rotation = rotation + right
+		end
+		if love.keyboard.isDown("i") then
+			rotation = rotation - right
+		end
+		if love.keyboard.isDown("l") then
+			rotation = rotation + up
+		end
+		if love.keyboard.isDown("j") then
+			rotation = rotation - up
+		end
+		if love.keyboard.isDown("u") then
+			rotation = rotation + forward
+		end
+		if love.keyboard.isDown("o") then
+			rotation = rotation - forward
+		end
 	end
 	rotation = -rotation -- TODO: Understand why this is there when other projects don't need it.
 	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
@@ -545,7 +556,7 @@ function love.update(dt)
 	camera.position.z = camera.position.z % consts.tau
 end
 
-function love.draw()
+local function draw()
 	local multiplier = camera.altCoords and -1 or 1
 
 	love.graphics.setShader(sceneShader)
@@ -565,8 +576,8 @@ function love.draw()
 	sceneShader:send("cameraHorizontalDirectionExtent", math.tan(camera.verticalFOV / 2))
 	sceneShader:send("cameraVerticalDirectionExtent", math.tan(camera.verticalFOV / 2) / screenAspectRatio)
 	sceneShader:send("wormholeThroatRadius", wormhole.throatRadius)
-	sceneShader:send("raySpeed", consts.rayStepSize)
-	sceneShader:send("rayStepCount", consts.rayStepCount)
+	sceneShader:send("raySpeed", rayStepSize)
+	sceneShader:send("rayStepCount", rayStepCount)
 	sceneShader:send("initialAltCoords", camera.altCoords)
 	sceneShader:send("altCoordsProportion", consts.altCoordsProportion)
 	sceneShader:send("lowerSkybox", lowerSkybox)
@@ -574,8 +585,94 @@ function love.draw()
 	love.graphics.draw(dummyTexture, 0, 0, 0, outputCanvas:getDimensions())
 	love.graphics.setShader()
 	love.graphics.setCanvas()
+end
 
-	love.graphics.draw(outputCanvas)
+function love.load(args)
+	if args[1] == "--render" then
+		rayStepSize = 0.25
+		rayStepCount = 512
 
-	love.graphics.print(love.timer.getFPS())
+		local canvasWidth = 3840 -- 1920
+		local canvasHeight = 2160 -- 1080
+		local time = 20
+		init({
+			canvasWidth = canvasWidth,
+			canvasHeight = canvasHeight,
+			initialVelocity = vec3(80 / time, 0.1 / time, 0),
+			initialAngularVelocity = vec3(0, 0.002 / time, 0)
+		})
+		local framerate = 60
+		renderModeInfo = {
+			ticksDone = 0,
+			ticksRequired = math.ceil(time * framerate),
+			tickDt = 1 / framerate,
+			preview = true
+		}
+
+		-- It doesn't go into the love save directory
+		-- local extension = "mkv" -- "mp4"
+		-- local dateTime = os.date("%Y-%m-%d %H-%M-%S")
+		-- local outputFilename
+		-- local i = 1
+		-- repeat
+		-- 	outputFilename = dateTime .. " render " .. i .. "." .. extension
+		-- until not love.filesystem.getInfo(outputFilename)
+		-- local outputFilenameSpaceFix = outputFilename:gsub(" ", "\\ ")
+
+		local outPath = args[2]
+
+		local ffmpegFile, errorMessage = io.popen(
+			"ffmpeg -f rawvideo -r " .. framerate .. " -pix_fmt rgba -s " .. canvasWidth .. "x" .. canvasHeight .. " -i - -c:v libx264 -crf:v 23 -preset:v veryslow -filter:v format=yuv420p " .. outPath,
+			love.system.getOS() == "Windows" and "wb" or "w" -- Apparently windows needs "wb"
+		)
+		if not ffmpegFile then
+			error(errorMessage)
+		end
+		renderModeInfo.ffmpegFile = ffmpegFile
+	else
+		rayStepSize = 1
+		rayStepCount = 128
+
+		init()
+	end
+end
+
+function love.update(dt)
+	if renderModeInfo then
+		if not renderModeInfo.finished then
+			update(renderModeInfo.tickDt, true)
+			draw()
+			local imageData = love.graphics.readbackTexture(outputCanvas)
+			renderModeInfo.ffmpegFile:write(imageData:getString())
+			imageData:release()
+			renderModeInfo.ticksDone = renderModeInfo.ticksDone + 1
+			if renderModeInfo.ticksDone >= renderModeInfo.ticksRequired then
+				-- Finish
+				renderModeInfo.ffmpegFile:close()
+				renderModeInfo.finished = true
+			end
+		end
+	else
+		update(dt)
+	end
+end
+
+function love.draw()
+	if renderModeInfo then
+		if renderModeInfo.preview then
+			local cw, ch = outputCanvas:getDimensions() -- Canvas dimensions
+			local sw, sh = love.graphics.getDimensions() -- Screen dimensions
+			local s = math.min(sw / cw, sh / ch) -- Scale
+			local x, y = (sw - cw * s) / 2, (sh - ch * s) / 2 -- Position
+			love.graphics.draw(outputCanvas, x, y, 0, s, s)
+		end
+		love.graphics.print(
+			"Tick progress: " .. renderModeInfo.ticksDone .. "/" .. renderModeInfo.ticksRequired .. "\n" ..
+			(renderModeInfo.finished and "Finished!\n" or "")
+		)
+	else
+		draw()
+		love.graphics.draw(outputCanvas)
+		love.graphics.print(love.timer.getFPS())
+	end
 end

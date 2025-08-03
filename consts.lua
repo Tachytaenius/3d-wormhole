@@ -4,9 +4,6 @@ local consts = {}
 
 consts.tau = math.pi * 2
 
-consts.rayStepSize = 1
-consts.rayStepCount = 128
-
 consts.forwardVector = vec3(0, 0, 1)
 consts.upVector = vec3(0, 1, 0)
 consts.rightVector = vec3(1, 0, 0)

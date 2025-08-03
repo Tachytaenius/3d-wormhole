@@ -9,7 +9,7 @@ uniform vec3 initialCameraRight;
 uniform float cameraHorizontalDirectionExtent;
 uniform float cameraVerticalDirectionExtent;
 
-in layout(location = 0) vec4 VertexPosition;
+layout(location = 0) in vec4 VertexPosition;
 
 out vec3 directionPreNormalise;
 
