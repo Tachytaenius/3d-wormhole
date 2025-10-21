@@ -370,11 +370,13 @@ local function init(parameters)
 		position = position,
 		velocity = parameters.initialVelocity or vec3(),
 		acceleration = 50,
+		maxSpeed = 50,
 
 		forward = forward,
 		up = up,
 		angularVelocity = parameters.initialAngularVelocity or vec3(),
 		angularAcceleration = 1,
+		maxAngularSpeed = 1,
 
 		verticalFOV = math.rad(90)
 	}
@@ -437,8 +439,17 @@ local function update(dt, rendering)
 		end
 	end
 	rotation = -rotation -- TODO: Understand why this is there when other projects don't need it.
-	local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
-	camera.angularVelocity = camera.angularVelocity + angularAcceleration * dt
+	if not love.keyboard.isDown("lctrl") then
+		-- Accelerate and limit angular velocity
+		local angularAcceleration = limitVectorLength(camera.position, rotation, camera.angularAcceleration)
+		camera.angularVelocity = camera.angularVelocity + angularAcceleration * dt
+		camera.angularVelocity = limitVectorLength(camera.position, camera.angularVelocity, camera.maxAngularSpeed)
+	else
+		-- Brake
+		local angularSpeed = vectorLengthTangent(camera.position, camera.angularVelocity)
+		angularSpeed = math.max(0, angularSpeed - camera.angularAcceleration * dt)
+		camera.angularVelocity = angularSpeed * normaliseOrZeroTangent(camera.position, camera.angularVelocity)
+	end
 
 	local forwardCartesian = sphericalToCartesian(camera.position, forward)
 	local upCartesian = sphericalToCartesian(camera.position, up)
@@ -448,7 +459,16 @@ local function update(dt, rendering)
 	camera.forward = cartesianToSpherical(camera.position, forwardCartesianRotated)
 	camera.up = cartesianToSpherical(camera.position, upCartesianRotated)
 
-	camera.velocity = camera.velocity + acceleration * dt
+	if not love.keyboard.isDown("lshift") then
+		-- Accelerate and then limit velocity
+		camera.velocity = camera.velocity + acceleration * dt
+		camera.velocity = limitVectorLength(camera.position, camera.velocity, camera.maxSpeed)
+	else
+		-- Brake
+		local speed = vectorLengthTangent(camera.position, camera.velocity)
+		speed = math.max(0, speed - camera.acceleration * dt)
+		camera.velocity = speed * normaliseOrZeroTangent(camera.position, camera.velocity)
+	end
 
 	-- Move position and parallel transport tangent vectors
 	local method = rk4
