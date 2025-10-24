@@ -35,9 +35,14 @@ uniform int rayStepCount;
 uniform float raySpeed;
 
 uniform float wormholeThroatRadius;
+uniform vec3 mouthAPosition;
+uniform vec3 mouthBPosition;
+uniform float wormholeCutoffGradient;
+uniform float wormholeCutoffExtraFactor;
 
 uniform vec3 initialCameraPosition;
-
+uniform bool startInCurvedMode;
+uniform bool startInUpperWorld;
 uniform bool initialAltCoords;
 uniform float altCoordsProportion;
 
@@ -46,6 +51,20 @@ uniform samplerCube upperSkybox;
 
 float safeAcos(float x) { // For use when, mathematically, the output should be within [-1, 1]
 	return acos(clamp(x, -1.0, 1.0));
+}
+
+vec3 fixPosition(float r, vec3 converted) {
+	if (r >= 0.0) {
+		return mouthAPosition + converted;
+	} else {
+		vec3 delta = mouthBPosition - mouthAPosition;
+		vec3 direction = normalize(delta);
+		vec3 parallel = direction * dot(converted, direction);
+		vec3 perpendicular = converted - parallel;
+		vec3 parallelFlipped = -parallel;
+		vec3 convertedFlipped = parallelFlipped + perpendicular;
+		return mouthBPosition + convertedFlipped;
+	}
 }
 
 // Reference frames:
@@ -84,41 +103,78 @@ vec3 spherical1ToAbsoluteCartesianPosition(vec3 position) {
 	float r = position.x;
 	float theta = position.y;
 	float phi = position.z;
-	return vec3(
+	vec3 converted = vec3(
 		r * sin(theta) * cos(phi),
 		r * sin(theta) * sin(phi),
 		r * cos(theta)
 	);
+	return fixPosition(r, converted);
 }
 
 vec3 spherical1ToAbsoluteCartesianTangent(vec3 position, vec3 tangent) {
-	// TEMP
-	// Rho?
-	float d = 0.1;
-	return (
-		spherical1ToAbsoluteCartesianPosition(position + tangent * d) -
-		spherical1ToAbsoluteCartesianPosition(position)
-	) / d;
+	float r = position.x;
+	float theta = position.y;
+	float phi = position.z;
+
+	float dR = tangent.x;
+	float dTheta = tangent.y;
+	float dPhi = tangent.z;
+
+	return vec3(
+		(
+			sin(theta) * cos(phi) * dR +
+			r * cos(theta) * cos(phi) * dTheta -
+			r * sin(theta) * sin(phi) * dPhi
+		),
+		(
+			sin(theta) * sin(phi) * dR +
+			r * cos(theta) * sin(phi) * dTheta +
+			r * sin(theta) * cos(phi) * dPhi
+		),
+		(
+			cos(theta) * dR -
+			r * sin(theta) * dTheta
+		)
+	);
 }
 
 vec3 spherical2ToAbsoluteCartesianPosition(vec3 position) {
 	float r = position.x;
 	float theta = position.y;
 	float phi = position.z;
-	return vec3(
+	vec3 converted = vec3(
 		r * sin(theta) * cos(phi),
 		r * cos(theta),
 		r * sin(theta) * sin(phi)
 	);
+	return fixPosition(r, converted);
 }
 
 vec3 spherical2ToAbsoluteCartesianTangent(vec3 position, vec3 tangent) {
-	// TEMP
-	float d = 0.1;
-	return (
-		spherical2ToAbsoluteCartesianPosition(position + tangent * d) -
-		spherical2ToAbsoluteCartesianPosition(position)
-	) / d;
+	float r = position.x;
+	float theta = position.y;
+	float phi = position.z;
+
+	float dR = tangent.x;
+	float dTheta = tangent.y;
+	float dPhi = tangent.z;
+
+	return vec3(
+		(
+			sin(theta) * cos(phi) * dR +
+			r * cos(theta) * cos(phi) * dTheta -
+			r * sin(theta) * sin(phi) * dPhi
+		),
+		(
+			cos(theta) * dR -
+			r * sin(theta) * dTheta
+		),
+		(
+			sin(theta) * sin(phi) * dR +
+			r * cos(theta) * sin(phi) * dTheta +
+			r * sin(theta) * cos(phi) * dPhi
+		)
+	);
 }
 
 vec3 spherical1ToSpherical2Position(vec3 position) {
@@ -218,6 +274,16 @@ vec3 spherical2ToSpherical1Velocity(vec3 position, vec3 velocity) {
 
 // Coordinate system functions end
 
+float getWormholeCutoffR(bool inside) {
+	float cutoffR = (wormholeThroatRadius * sqrt(1.0 - wormholeCutoffGradient * wormholeCutoffGradient)) / wormholeCutoffGradient;
+
+	if (inside) {
+		return cutoffR * (1.0 + wormholeCutoffExtraFactor);
+	} else {
+		return cutoffR * (1.0 - wormholeCutoffExtraFactor);
+	}
+}
+
 mat3[3] getChristoffelSymbols(vec3 position) {
 	float r = position.x;
 	float theta = position.y;
@@ -276,67 +342,129 @@ vec3 sampleLowerBackground(vec3 direction) {
 
 void pixelmain() {
 	vec3 initialRayDirectionCartesian = normalize(directionPreNormalise);
+	bool curvedMode = startInCurvedMode;
 
-	vec3 rayPosition = initialCameraPosition;
-	vec3 rayVelocity = raySpeed * (cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian);
-	bool altCoords = initialAltCoords;
+	vec3 rayPosition;
+	vec3 rayVelocity;
+	bool altCoords;
+	bool upperWorld;
+	if (curvedMode) {
+		rayPosition = initialCameraPosition;
+		rayVelocity = raySpeed * (cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian);
+		altCoords = initialAltCoords;
+		// upperWorld doesn't need to be set
+	} else {
+		rayPosition = initialCameraPosition;
+		rayVelocity = raySpeed * initialRayDirectionCartesian;
+		// altCoords doesn't need to be set
+		upperWorld = startInUpperWorld;
+	}
 	for (int stepNumber = 0; stepNumber < rayStepCount; stepNumber++) {
-		// Check if a coordinate transition is needed between main and alternate spherical coords
-		if (
-			rayPosition.y < altCoordsProportion * tau / 2.0 ||
-			rayPosition.y > (1.0 - altCoordsProportion) * tau / 2.0
-			// || true // To switch every frame
-		) {
-			vec3 fakeRayPosition = vec3(1.0, rayPosition.yz); // For some reason setting the 1.0 to a really high value makes things smoother when switching between coordinate systems every frame (for testing purposes), but doesn't deal with the seam seen when switching coordinate systems normally?
-
-			// float r = rayPosition.x;
-			// float rho = sqrt(r * r + wormholeThroatRadius * wormholeThroatRadius)
-			// vec3 fakeRayPosition = vec3(rho, rayPosition.yz);
-
-			// vec3 fakeRayPosition = rayPosition; // Breaks on the intersection between the wormhole sphere and surface where theta is at a value where we have to switch coordinates. Because r = 0 there
-
-			// if (altCoords) {
-			// 	rayVelocity.yz = spherical2ToSpherical1Velocity(fakeRayPosition, rayVelocity).yz;
-			// 	rayPosition.yz = spherical2ToSpherical1Position(fakeRayPosition).yz;
-			// 	altCoords = false;
-			// } else {
-			// 	rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
-			// 	rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
-			// 	altCoords = true;
-			// }
-
-			rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
-			rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
-			altCoords = !altCoords;
-		}
-
-		// Move (velocity is parallel transported)
-
 		float integrationT = 0.0;
 		float integrationTStep = 1.0;
-		mat2x3 state = mat2x3(
-			rayPosition,
-			rayVelocity
-		);
 
-		// Euler integration
-		// state += integrationStateDeriv(integrationT, state) * integrationTStep;
+		if (!curvedMode) {
+			rayPosition += rayVelocity * integrationTStep;
 
-		// Runge-Kutta 4 integration
-		mat2x3 k1 = integrationStateDeriv(integrationT, state) * integrationTStep;
-		mat2x3 k2 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k1 / 2.0) * integrationTStep;
-		mat2x3 k3 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k2 / 2.0) * integrationTStep;
-		mat2x3 k4 = integrationStateDeriv(integrationT + integrationTStep, state + k3) * integrationTStep;
-		state += (k1 + k2 * 2.0 + k3 * 2.0 + k4) / 6.0;
+			// Check for flat->curved switch
+			float aDistance = distance(rayPosition, mouthAPosition);
+			float bDistance = distance(rayPosition, mouthBPosition);
+			vec3 mouthPosition = aDistance < bDistance ? mouthAPosition : mouthBPosition;
 
-		rayPosition = state[0];
-		rayVelocity = state[1];
+			vec3 delta = rayPosition - mouthPosition;
+			float r = length(delta);
+			float cutoffR = getWormholeCutoffR(false);
+
+			if (abs(r) < cutoffR) {
+				// TODO (dont forget to set altcoords and use upperworld)
+				discard;
+				// curvedMode = true;
+				// altCoords = false;
+			}
+		} else {
+			// Check if a coordinate transition is needed between main and alternate spherical coords
+			if (
+				rayPosition.y < altCoordsProportion * tau / 2.0 ||
+				rayPosition.y > (1.0 - altCoordsProportion) * tau / 2.0
+			) {
+				vec3 fakeRayPosition = vec3(1.0, rayPosition.yz); // For some reason setting the 1.0 to a really high value makes things smoother when switching between coordinate systems every frame (for testing purposes), but doesn't deal with the seam seen when switching coordinate systems normally?
+
+				// float r = rayPosition.x;
+				// float rho = sqrt(r * r + wormholeThroatRadius * wormholeThroatRadius)
+				// vec3 fakeRayPosition = vec3(rho, rayPosition.yz);
+
+				// vec3 fakeRayPosition = rayPosition; // Breaks on the intersection between the wormhole sphere and surface where theta is at a value where we have to switch coordinates. Because r = 0 there
+
+				// if (altCoords) {
+				// 	rayVelocity.yz = spherical2ToSpherical1Velocity(fakeRayPosition, rayVelocity).yz;
+				// 	rayPosition.yz = spherical2ToSpherical1Position(fakeRayPosition).yz;
+				// 	altCoords = false;
+				// } else {
+				// 	rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
+				// 	rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
+				// 	altCoords = true;
+				// }
+
+				rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
+				rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
+				altCoords = !altCoords;
+			}
+
+			// Move (velocity is parallel transported)
+
+			mat2x3 state = mat2x3(
+				rayPosition,
+				rayVelocity
+			);
+
+			// Euler integration
+			// state += integrationStateDeriv(integrationT, state) * integrationTStep;
+
+			// Runge-Kutta 4 integration
+			mat2x3 k1 = integrationStateDeriv(integrationT, state) * integrationTStep;
+			mat2x3 k2 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k1 / 2.0) * integrationTStep;
+			mat2x3 k3 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k2 / 2.0) * integrationTStep;
+			mat2x3 k4 = integrationStateDeriv(integrationT + integrationTStep, state + k3) * integrationTStep;
+			state += (k1 + k2 * 2.0 + k3 * 2.0 + k4) / 6.0;
+
+			rayPosition = state[0];
+			rayVelocity = state[1];
+
+			// Check for a curved->flat mode switch
+			float r = rayPosition.x;
+			float cutoffR = getWormholeCutoffR(true);
+			if (abs(r) > cutoffR) {
+				vec3 newPosition;
+				vec3 newVelocity;
+				if (altCoords) {
+					newPosition = spherical2ToAbsoluteCartesianPosition(rayPosition);
+					newVelocity = spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity);
+				} else {
+					newPosition = spherical1ToAbsoluteCartesianPosition(rayPosition);
+					newVelocity = spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity);
+				}
+
+				rayPosition = newPosition;
+				rayVelocity = newVelocity;
+				curvedMode = false;
+				upperWorld = r >= 0.0;
+			}
+		}
 	}
 
-	vec3 finalRayDirectionCartesian = normalize(altCoords ? spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity) : spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity));
-	// vec3 finalRayDirectionCartesian = normalize(altCoords ? spherical2ToAbsoluteCartesianPosition(rayPosition) : spherical1ToAbsoluteCartesianPosition(rayPosition));
+	vec3 finalRayDirectionCartesian;
+	if (curvedMode) {
+		finalRayDirectionCartesian = normalize(altCoords ?
+			spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity) :
+			spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity)
+		);
+		upperWorld = rayPosition.x >= 0;
+	} else {
+		finalRayDirectionCartesian = normalize(rayVelocity);
+		// Retain prior upperWorld variable
+	}
 	vec3 backgroundColour;
-	if (rayPosition.x > 0) {
+	if (upperWorld) {
 		backgroundColour = sampleUpperBackground(finalRayDirectionCartesian);
 	} else {
 		backgroundColour = sampleLowerBackground(finalRayDirectionCartesian);
