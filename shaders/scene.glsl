@@ -35,9 +35,13 @@ uniform int rayStepCount;
 uniform float raySpeed;
 
 uniform float wormholeThroatRadius;
+uniform vec3 mouthAPosition;
+uniform vec3 mouthBPosition;
+uniform float wormholeCutoffGradient;
+uniform float wormholeCutoffExtraFactor;
 
 uniform vec3 initialCameraPosition;
-
+uniform bool startInCurvedMode;
 uniform bool initialAltCoords;
 uniform float altCoordsProportion;
 
@@ -46,6 +50,76 @@ uniform samplerCube upperSkybox;
 
 float safeAcos(float x) { // For use when, mathematically, the output should be within [-1, 1]
 	return acos(clamp(x, -1.0, 1.0));
+}
+
+vec3 fixSphericalToAbsoluteCartesian(float r, vec3 converted, bool isPosition) {
+	if (r >= 0.0) {
+		if (isPosition) {
+			return mouthAPosition + converted;
+		} else {
+			return converted;
+		}
+	} else {
+		if (isPosition) {
+			return mouthBPosition + converted;
+		} else {
+			return converted;
+		}
+	}
+}
+
+// The raycasts are for flat mode
+struct RaycastResult {
+	bool hit;
+	float t;
+};
+const RaycastResult raycastMiss = RaycastResult (false, 0.0);
+
+RaycastResult sphereRaycast(vec3 spherePosition, float sphereRadius, vec3 rayStart, vec3 rayDirection) {
+	vec3 sphereToStart = rayStart - spherePosition;
+	float b = dot(sphereToStart, rayDirection);
+	vec3 qc = sphereToStart - b * rayDirection;
+	float h = sphereRadius * sphereRadius - dot(qc, qc);
+	if (h < 0.0) {
+		return raycastMiss;
+	}
+	float sqrtH = sqrt(h);
+	float t1 = -b - sqrtH;
+	float t2 = -b + sqrtH;
+	if (t1 < 0.0) {
+		return raycastMiss;
+	}
+	return RaycastResult (true, t1);
+}
+
+void tryNewClosestHit(inout RaycastResult closestHit, RaycastResult newHit, inout bool closestHitIsMouthB, bool newHitIsMouthB) {
+	if (newHit.hit && (!closestHit.hit || newHit.t < closestHit.t)) {
+		closestHit = newHit;
+		closestHitIsMouthB = newHitIsMouthB;
+	}
+}
+
+float vectorLengthTangent(vec3 position, vec3 tangent) {
+	// Line element of the metric tensor
+
+	float r = position.x;
+	float theta = position.y;
+	float phi = position.z;
+
+	float dR = tangent.x;
+	float dTheta = tangent.y;
+	float dPhi = tangent.z;
+
+	return sqrt(
+		dR * dR + (wormholeThroatRadius * wormholeThroatRadius + r * r) * (
+			dTheta * dTheta + sin(theta) * sin(theta) * dPhi * dPhi
+		)
+	);
+}
+
+vec3 normaliseOrZeroTangent(vec3 position, vec3 tangent) {
+	float magnitude = vectorLengthTangent(position, tangent);
+	return magnitude > 0.0 ? tangent / magnitude : vec3(0.0);
 }
 
 // Reference frames:
@@ -81,44 +155,105 @@ mat3 sphericalToCartesianBasis(vec3 position) {
 }
 
 vec3 spherical1ToAbsoluteCartesianPosition(vec3 position) {
+	float originalR = position.x;
+	float mul = originalR >= 0.0 ? 1.0 : -1.0;
+	position *= mul;
 	float r = position.x;
 	float theta = position.y;
 	float phi = position.z;
-	return vec3(
+	vec3 converted = vec3(
 		r * sin(theta) * cos(phi),
 		r * sin(theta) * sin(phi),
 		r * cos(theta)
 	);
+	return fixSphericalToAbsoluteCartesian(originalR, converted, true);
 }
 
 vec3 spherical1ToAbsoluteCartesianTangent(vec3 position, vec3 tangent) {
-	// TEMP
-	// Rho?
-	float d = 0.1;
-	return (
-		spherical1ToAbsoluteCartesianPosition(position + tangent * d) -
-		spherical1ToAbsoluteCartesianPosition(position)
-	) / d;
-}
+	float originalR = position.x;
+	float mul = originalR >= 0.0 ? 1.0 : -1.0;
+	position *= mul;
+	tangent *= mul;
 
-vec3 spherical2ToAbsoluteCartesianPosition(vec3 position) {
 	float r = position.x;
 	float theta = position.y;
 	float phi = position.z;
-	return vec3(
+
+	float dR = tangent.x;
+	float dTheta = tangent.y;
+	float dPhi = tangent.z;
+
+	vec3 converted = vec3(
+		(
+			sin(theta) * cos(phi) * dR +
+			r * cos(theta) * cos(phi) * dTheta -
+			r * sin(theta) * sin(phi) * dPhi
+		),
+		(
+			sin(theta) * sin(phi) * dR +
+			r * cos(theta) * sin(phi) * dTheta +
+			r * sin(theta) * cos(phi) * dPhi
+		),
+		(
+			cos(theta) * dR -
+			r * sin(theta) * dTheta
+		)
+	);
+	if (length(converted) > 0.0) {
+		converted = normalize(converted) * vectorLengthTangent(position, tangent);
+	}
+	return fixSphericalToAbsoluteCartesian(originalR, converted, false);
+}
+
+vec3 spherical2ToAbsoluteCartesianPosition(vec3 position) {
+	float originalR = position.x;
+	float mul = originalR >= 0.0 ? 1.0 : -1.0;
+	position *= mul;
+	float r = position.x;
+	float theta = position.y;
+	float phi = position.z;
+	vec3 converted = vec3(
 		r * sin(theta) * cos(phi),
 		r * cos(theta),
 		r * sin(theta) * sin(phi)
 	);
+	return fixSphericalToAbsoluteCartesian(originalR, converted, true);
 }
 
 vec3 spherical2ToAbsoluteCartesianTangent(vec3 position, vec3 tangent) {
-	// TEMP
-	float d = 0.1;
-	return (
-		spherical2ToAbsoluteCartesianPosition(position + tangent * d) -
-		spherical2ToAbsoluteCartesianPosition(position)
-	) / d;
+	float originalR = position.x;
+	float mul = originalR >= 0.0 ? 1.0 : -1.0;
+	position *= mul;
+	tangent *= mul;
+
+	float r = position.x;
+	float theta = position.y;
+	float phi = position.z;
+
+	float dR = tangent.x;
+	float dTheta = tangent.y;
+	float dPhi = tangent.z;
+
+	vec3 converted = vec3(
+		(
+			sin(theta) * cos(phi) * dR +
+			r * cos(theta) * cos(phi) * dTheta -
+			r * sin(theta) * sin(phi) * dPhi
+		),
+		(
+			cos(theta) * dR -
+			r * sin(theta) * dTheta
+		),
+		(
+			sin(theta) * sin(phi) * dR +
+			r * cos(theta) * sin(phi) * dTheta +
+			r * sin(theta) * cos(phi) * dPhi
+		)
+	);
+	if (length(converted) > 0.0) {
+		converted = normalize(converted) * vectorLengthTangent(position, tangent);
+	}
+	return fixSphericalToAbsoluteCartesian(originalR, converted, false);
 }
 
 vec3 spherical1ToSpherical2Position(vec3 position) {
@@ -216,7 +351,84 @@ vec3 spherical2ToSpherical1Velocity(vec3 position, vec3 velocity) {
 	return spherical1ToSpherical2Velocity(position, velocity);
 }
 
+vec3 absoluteCartesianToSphericalPosition(vec3 relativePosition, bool intoMouthZoneA) {
+	float r = length(relativePosition);
+	float theta = safeAcos(relativePosition.z / r);
+	float phi = atan(relativePosition.y, relativePosition.x); // "atan2"
+
+	if (!intoMouthZoneA) {
+		r = -r;
+		theta = -theta;
+		phi = -phi;
+	}
+
+	// Fix spherical angles
+	theta = mod(theta, tau); // Should be proper modulo regarding negatives (-1 mod 10 = 9)
+	phi = mod(phi, tau);
+	if (theta < 0.0) {
+		theta = -theta;
+		phi += tau / 2.0;
+	}
+	if (theta > tau / 2.0) {
+		theta = tau - theta;
+		phi += tau / 2.0;
+	}
+	theta = mod(theta, tau);
+	phi = mod(phi, tau);
+
+	return vec3(r, theta, phi);
+}
+
+vec3 absoluteCartesianToSphericalTangent(vec3 relativePosition, bool intoMouthZoneA, vec3 tangent) {
+	// float d = 0.1;
+	// float magnitude = length(tangent);
+	// vec3 normalisedOrZero = magnitude > 0.0 ? normalize(tangent) : vec3(0.0);
+	// vec3 small = normalisedOrZero * d;
+	// vec3 a = absoluteCartesianToSphericalPosition(relativePosition, intoMouthZoneA);
+	// vec3 b = absoluteCartesianToSphericalPosition(relativePosition + small, intoMouthZoneA);
+	// vec3 diff = b - a;
+	// return magnitude * normaliseOrZeroTangent(absoluteCartesianToSphericalPosition(relativePosition, intoMouthZoneA), diff);
+
+	float x = relativePosition.x;
+	float y = relativePosition.y;
+	float z = relativePosition.z;
+
+	float dx = tangent.x;
+	float dy = tangent.y;
+	float dz = tangent.z;
+
+	float rSquared = dot(relativePosition, relativePosition);
+	float r = sqrt(rSquared);
+	
+	float dR = dot(relativePosition, tangent) / r;
+	float dTheta =
+		(x*z*dx + y*z*dy + (-(x*x)-(y*y))*dz) /
+		(sqrt((x*x+y*y)/rSquared) * r*r*r);
+	float dPhi =
+		(x*dy - y*dx) /
+		(x*x + y*y);
+
+	if (!intoMouthZoneA) {
+		dR = -dR;
+		dPhi = -dPhi;
+	}
+	vec3 converted = vec3(dR, dTheta, dPhi);
+
+	converted = length(tangent) * normaliseOrZeroTangent(absoluteCartesianToSphericalPosition(relativePosition, intoMouthZoneA), converted); // Preserve original length after converting
+	return converted;
+}
+
 // Coordinate system functions end
+
+float getWormholeCutoffR(bool inside) {
+	float cutoffR = (wormholeThroatRadius * sqrt(1.0 - wormholeCutoffGradient * wormholeCutoffGradient)) / wormholeCutoffGradient;
+
+	if (inside) {
+		return cutoffR * (1.0 + wormholeCutoffExtraFactor);
+	} else {
+		return cutoffR * (1.0 - wormholeCutoffExtraFactor);
+	}
+}
 
 mat3[3] getChristoffelSymbols(vec3 position) {
 	float r = position.x;
@@ -265,78 +477,171 @@ mat2x3 integrationStateDeriv(float t, mat2x3 state) {
 }
 
 vec3 sampleUpperBackground(vec3 direction) {
-	return Texel(upperSkybox, direction).rgb;
-	// return direction * 0.5 + 0.5;
+	vec3 tex = Texel(upperSkybox, direction).rgb;
+	vec3 dir = direction * 0.5 + 0.5;
+	// return mix(tex, dir, 0.3);
+	return tex;
 }
 
 vec3 sampleLowerBackground(vec3 direction) {
-	return Texel(lowerSkybox, direction).rgb;
-	// return (direction * 0.5 + 0.5) * 0.5;
+	vec3 tex = Texel(lowerSkybox, direction).rgb;
+	vec3 dir = (direction * 0.5 + 0.5) * 0.5;
+	// return mix(tex, dir, 0.3);
+	return tex;
 }
 
 void pixelmain() {
 	vec3 initialRayDirectionCartesian = normalize(directionPreNormalise);
+	bool curvedMode = startInCurvedMode;
 
-	vec3 rayPosition = initialCameraPosition;
-	vec3 rayVelocity = raySpeed * (cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian);
-	bool altCoords = initialAltCoords;
+	vec3 rayPosition;
+	vec3 rayVelocity;
+	bool altCoords;
+	if (curvedMode) {
+		rayPosition = initialCameraPosition;
+		rayVelocity = raySpeed * (cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian);
+		altCoords = initialAltCoords;
+	} else {
+		rayPosition = initialCameraPosition;
+		rayVelocity = raySpeed * initialRayDirectionCartesian;
+		// altCoords doesn't need to be set
+	}
 	for (int stepNumber = 0; stepNumber < rayStepCount; stepNumber++) {
-		// Check if a coordinate transition is needed between main and alternate spherical coords
-		if (
-			rayPosition.y < altCoordsProportion * tau / 2.0 ||
-			rayPosition.y > (1.0 - altCoordsProportion) * tau / 2.0
-			// || true // To switch every frame
-		) {
-			vec3 fakeRayPosition = vec3(1.0, rayPosition.yz); // For some reason setting the 1.0 to a really high value makes things smoother when switching between coordinate systems every frame (for testing purposes), but doesn't deal with the seam seen when switching coordinate systems normally?
-
-			// float r = rayPosition.x;
-			// float rho = sqrt(r * r + wormholeThroatRadius * wormholeThroatRadius)
-			// vec3 fakeRayPosition = vec3(rho, rayPosition.yz);
-
-			// vec3 fakeRayPosition = rayPosition; // Breaks on the intersection between the wormhole sphere and surface where theta is at a value where we have to switch coordinates. Because r = 0 there
-
-			// if (altCoords) {
-			// 	rayVelocity.yz = spherical2ToSpherical1Velocity(fakeRayPosition, rayVelocity).yz;
-			// 	rayPosition.yz = spherical2ToSpherical1Position(fakeRayPosition).yz;
-			// 	altCoords = false;
-			// } else {
-			// 	rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
-			// 	rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
-			// 	altCoords = true;
-			// }
-
-			rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
-			rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
-			altCoords = !altCoords;
-		}
-
-		// Move (velocity is parallel transported)
-
 		float integrationT = 0.0;
 		float integrationTStep = 1.0;
-		mat2x3 state = mat2x3(
-			rayPosition,
-			rayVelocity
-		);
 
-		// Euler integration
-		// state += integrationStateDeriv(integrationT, state) * integrationTStep;
+		if (!curvedMode) {
+			// rayPosition += rayVelocity * integrationTStep;
 
-		// Runge-Kutta 4 integration
-		mat2x3 k1 = integrationStateDeriv(integrationT, state) * integrationTStep;
-		mat2x3 k2 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k1 / 2.0) * integrationTStep;
-		mat2x3 k3 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k2 / 2.0) * integrationTStep;
-		mat2x3 k4 = integrationStateDeriv(integrationT + integrationTStep, state + k3) * integrationTStep;
-		state += (k1 + k2 * 2.0 + k3 * 2.0 + k4) / 6.0;
+			// // Check for flat->curved switch
+			// float aDistance = distance(rayPosition, mouthAPosition);
+			// float bDistance = distance(rayPosition, mouthBPosition);
+			// vec3 mouthPosition = aDistance <= bDistance ? mouthAPosition : mouthBPosition;
 
-		rayPosition = state[0];
-		rayVelocity = state[1];
+			// vec3 delta = rayPosition - mouthPosition;
+			// float r = length(delta);
+			// float cutoffR = getWormholeCutoffR(false);
+
+			// if (abs(r) < cutoffR) {
+				// Mode switch
+			// }
+
+			vec3 rayDirection = normalize(rayVelocity);
+			float mouthZoneRadius = getWormholeCutoffR(false);
+			RaycastResult closestHit = raycastMiss;
+			bool closestHitIsMouthB; // Doesn't need initialising; if this is read it will have been written to (we will have a hit)
+
+			RaycastResult aResult = sphereRaycast(mouthAPosition, mouthZoneRadius, rayPosition, rayDirection);
+			tryNewClosestHit(closestHit, aResult, closestHitIsMouthB, false);
+			RaycastResult bResult = sphereRaycast(mouthBPosition, mouthZoneRadius, rayPosition, rayDirection);
+			tryNewClosestHit(closestHit, bResult, closestHitIsMouthB, true);
+
+			if (closestHit.hit) {
+				vec3 mouthPosition = closestHitIsMouthB ? mouthBPosition : mouthAPosition;
+				vec3 positionRelative = rayPosition - mouthPosition;
+				vec3 direction = normalize(positionRelative);
+				float dotResult = dot(direction, vec3(0.0, 0.0, 1.0));
+				float angle = safeAcos(abs(dotResult));
+				bool toAltCoords = angle < altCoordsProportion * tau / 2.0;
+
+				vec3 position = rayPosition;
+				vec3 velocity = rayVelocity;
+				if (toAltCoords) {
+					positionRelative.yz = positionRelative.zy;
+					velocity.yz = velocity.zy;
+				}
+
+				rayPosition = absoluteCartesianToSphericalPosition(positionRelative, !closestHitIsMouthB);
+				rayVelocity = absoluteCartesianToSphericalTangent(positionRelative, !closestHitIsMouthB, velocity);
+
+				altCoords = toAltCoords;
+				curvedMode = true;
+			} else {
+				break;
+			}
+		} else {
+			// Check if a coordinate transition is needed between main and alternate spherical coords
+			if (
+				rayPosition.y < altCoordsProportion * tau / 2.0 ||
+				rayPosition.y > (1.0 - altCoordsProportion) * tau / 2.0
+			) {
+				vec3 fakeRayPosition = vec3(1.0, rayPosition.yz); // For some reason setting the 1.0 to a really high value makes things smoother when switching between coordinate systems every frame (for testing purposes), but doesn't deal with the seam seen when switching coordinate systems normally?
+
+				// float r = rayPosition.x;
+				// float rho = sqrt(r * r + wormholeThroatRadius * wormholeThroatRadius)
+				// vec3 fakeRayPosition = vec3(rho, rayPosition.yz);
+
+				// vec3 fakeRayPosition = rayPosition; // Breaks on the intersection between the wormhole sphere and surface where theta is at a value where we have to switch coordinates. Because r = 0 there
+
+				// if (altCoords) {
+				// 	rayVelocity.yz = spherical2ToSpherical1Velocity(fakeRayPosition, rayVelocity).yz;
+				// 	rayPosition.yz = spherical2ToSpherical1Position(fakeRayPosition).yz;
+				// 	altCoords = false;
+				// } else {
+				// 	rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
+				// 	rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
+				// 	altCoords = true;
+				// }
+
+				rayVelocity.yz = spherical1ToSpherical2Velocity(fakeRayPosition, rayVelocity).yz;
+				rayPosition.yz = spherical1ToSpherical2Position(fakeRayPosition).yz;
+				altCoords = !altCoords;
+			}
+
+			// Move (velocity is parallel transported)
+
+			mat2x3 state = mat2x3(
+				rayPosition,
+				rayVelocity
+			);
+
+			// Euler integration
+			// state += integrationStateDeriv(integrationT, state) * integrationTStep;
+
+			// Runge-Kutta 4 integration
+			mat2x3 k1 = integrationStateDeriv(integrationT, state) * integrationTStep;
+			mat2x3 k2 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k1 / 2.0) * integrationTStep;
+			mat2x3 k3 = integrationStateDeriv(integrationT + integrationTStep / 2.0, state + k2 / 2.0) * integrationTStep;
+			mat2x3 k4 = integrationStateDeriv(integrationT + integrationTStep, state + k3) * integrationTStep;
+			state += (k1 + k2 * 2.0 + k3 * 2.0 + k4) / 6.0;
+
+			rayPosition = state[0];
+			rayVelocity = state[1];
+
+			// Check for a curved->flat mode switch
+			float r = rayPosition.x;
+			float cutoffR = getWormholeCutoffR(true);
+			if (abs(r) > cutoffR) {
+				vec3 newPosition;
+				vec3 newVelocity;
+				if (altCoords) {
+					newPosition = spherical2ToAbsoluteCartesianPosition(rayPosition);
+					newVelocity = spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity);
+				} else {
+					newPosition = spherical1ToAbsoluteCartesianPosition(rayPosition);
+					newVelocity = spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity);
+				}
+
+				rayPosition = newPosition;
+				rayVelocity = newVelocity;
+				curvedMode = false;
+			}
+		}
 	}
 
-	vec3 finalRayDirectionCartesian = normalize(altCoords ? spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity) : spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity));
-	// vec3 finalRayDirectionCartesian = normalize(altCoords ? spherical2ToAbsoluteCartesianPosition(rayPosition) : spherical1ToAbsoluteCartesianPosition(rayPosition));
+	vec3 finalRayDirectionCartesian;
+	if (curvedMode) {
+		finalRayDirectionCartesian = normalize(altCoords ?
+			spherical2ToAbsoluteCartesianTangent(rayPosition, rayVelocity) :
+			spherical1ToAbsoluteCartesianTangent(rayPosition, rayVelocity)
+		);
+	} else {
+		finalRayDirectionCartesian = normalize(rayVelocity);
+	}
+	// bool useUpperSkybox = dot(finalRayDirectionCartesian, mouthAPosition - mouthBPosition) >= 0.0;
+	bool useUpperSkybox = true;
 	vec3 backgroundColour;
-	if (rayPosition.x > 0) {
+	if (useUpperSkybox) {
 		backgroundColour = sampleUpperBackground(finalRayDirectionCartesian);
 	} else {
 		backgroundColour = sampleLowerBackground(finalRayDirectionCartesian);
