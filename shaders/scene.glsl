@@ -448,7 +448,7 @@ mat3[3] getChristoffelSymbols(vec3 position) {
 	forTheta[0][1] = commonVar;
 	forTheta[2][2] = -sin(2.0 * theta) / 2.0;
 
-	mat3 forPhi = mat3(0.0); 
+	mat3 forPhi = mat3(0.0);
 	forPhi[0][2] = commonVar;
 	forPhi[2][0] = commonVar;
 	forPhi[1][2] = cotTheta;
@@ -463,15 +463,31 @@ mat2x3 integrationStateDeriv(float t, mat2x3 state) {
 
 	vec3 positionDerivative = velocity;
 
-	mat3[3] christoffelSymbols = getChristoffelSymbols(position);
-	vec3 velocityDerivative = vec3(0.0);
-	for (int i = 0; i < 3; i++) {
-		for (int j = 0; j < 3; j++) {
-			for (int k = 0; k < 3; k++) {
-				velocityDerivative[i] -= christoffelSymbols[i][j][k] * velocity[j] * velocity[k];
-			}
-		}
-	}
+	// mat3[3] christoffelSymbols = getChristoffelSymbols(position);
+	// vec3 velocityDerivative = vec3(0.0);
+	// for (int i = 0; i < 3; i++) {
+	// 	for (int j = 0; j < 3; j++) {
+	// 		for (int k = 0; k < 3; k++) {
+	// 			velocityDerivative[i] -= christoffelSymbols[i][j][k] * velocity[j] * velocity[k];
+	// 		}
+	// 	}
+	// }
+
+	// Not using Christoffels for performance reasons. We can just write acceleration in terms of position and velocity.
+	float r = position[0];
+	float theta = position[1];
+	float phi = position[2];
+	float dr = velocity[0];
+	float dtheta = velocity[1];
+	float dphi = velocity[2];
+	float sinTheta = sin(theta);
+	float rho2 = wormholeThroatRadius * wormholeThroatRadius + r * r;
+	// This seems to differ from equations I derived from another method (Lagrangian)... I probably did the other method wrong.
+	vec3 velocityDerivative = vec3(
+		r * (dtheta * dtheta + sinTheta * sinTheta * dphi * dphi),
+		sin(2.0 * theta) / 2.0 * dphi * dphi - 2.0 * r / rho2 * dr * dtheta,
+		-2.0 / tan(theta) * dtheta * dphi - 2.0 * r / rho2 * dr * dphi
+	);
 
 	return mat2x3(positionDerivative, velocityDerivative);
 }
@@ -499,16 +515,18 @@ void pixelmain() {
 	bool altCoords;
 	if (curvedMode) {
 		rayPosition = initialCameraPosition;
-		rayVelocity = raySpeed * (cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian);
+		rayVelocity = cartesianToSphericalBasis(rayPosition) * initialRayDirectionCartesian;
 		altCoords = initialAltCoords;
 	} else {
 		rayPosition = initialCameraPosition;
-		rayVelocity = raySpeed * initialRayDirectionCartesian;
+		rayVelocity = initialRayDirectionCartesian;
 		// altCoords doesn't need to be set
 	}
 	for (int stepNumber = 0; stepNumber < rayStepCount; stepNumber++) {
+		float speedMultiplier = min(3.0, 0.5 * abs(rayPosition.x / wormholeThroatRadius)) + 0.25;
+
 		float integrationT = 0.0;
-		float integrationTStep = 1.0;
+		float integrationTStep = raySpeed * speedMultiplier;
 
 		if (!curvedMode) {
 			// rayPosition += rayVelocity * integrationTStep;

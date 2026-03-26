@@ -1073,7 +1073,7 @@ function love.load(args)
 		renderModeInfo.ffmpegFile = ffmpegFile
 	else
 		rayStepSize = 2
-		rayStepCount = 512
+		rayStepCount = 128
 
 		init()
 	end
